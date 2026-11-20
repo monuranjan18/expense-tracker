@@ -1,0 +1,152 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users/{userId}
+// Document ID: Firebase Auth UID ({userId})
+// Fields:
+//   - displayName: string (optional, 1-100 chars) - User's display name
+//   - email: string (optional, 3-150 chars) - User's email address
+//   - photoURL: string (optional, 1-500 chars) - User's profile photo URL
+//   - currency: string (optional, 1-10 chars) - User's preferred currency code
+//   - theme: string (optional, 1-10 chars) - UI theme setting
+//   - createdAt: timestamp | string (optional, immutable) - Creation timestamp
+//   - updatedAt: timestamp | string (optional) - Last update timestamp
+//
+// Collection: users/{userId}/transactions/{transactionId}
+// Document ID: Firestore auto ID or client-generated ID
+// Fields:
+//   - type: string (required, 'income' or 'expense') - Transaction direction
+//   - amount: number (required, > 0) - Transaction amount
+//   - category: string (required, 1-50 chars) - Category name
+//   - description: string (required, 1-200 chars) - Narrative description
+//   - date: string (required, 7-35 chars) - Transaction date (YYYY-MM-DD or ISO string)
+//   - paymentMethod: string (optional, 1-50 chars) - Payment method name
+//   - notes: string (optional, 0-1000 chars) - Extra notes or details
+//   - isSample: bool (optional) - True if demo transaction
+//   - createdAt: timestamp | string (optional, immutable) - Creation timestamp
+//   - updatedAt: timestamp | string (optional) - Last update timestamp
+//
+// Collection: users/{userId}/budgets/{budgetId}
+// Document ID: Firestore auto ID or client-generated ID
+// Fields:
+//   - category: string (required, 1-50 chars) - Expense category
+//   - amount: number (required, > 0) - Monthly budget target limit
+//   - month: string (required, 4-20 chars) - Budget month (e.g. YYYY-MM)
+//   - spent: number (optional, >= 0) - Current spending in category
+//   - isSample: bool (optional) - True if demo budget
+//   - createdAt: timestamp | string (optional, immutable) - Creation timestamp
+//   - updatedAt: timestamp | string (optional) - Last update timestamp
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the authenticated user matches the userId parameter
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Ensure fields specified in the list cannot be changed during an update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    // Validate user profile documents
+    function isValidUser(data) {
+      let allowedFields = ['displayName', 'email', 'photoURL', 'currency', 'theme', 'createdAt', 'updatedAt'];
+      return data.keys().hasOnly(allowedFields) &&
+        (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 150)) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500)) &&
+        (!('currency' in data) || (data.currency is string && data.currency.size() <= 10)) &&
+        (!('theme' in data) || (data.theme is string && data.theme.size() <= 10)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp || data.createdAt is string) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp || data.updatedAt is string);
+    }
+
+    // Validate transaction documents
+    function isValidTransaction(data) {
+      let requiredFields = ['type', 'amount', 'category', 'description', 'date'];
+      let allowedFields = ['type', 'amount', 'category', 'description', 'date', 'paymentMethod', 'notes', 'isSample', 'createdAt', 'updatedAt'];
+
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
+        (data.type == 'income' || data.type == 'expense') &&
+        (data.amount is number && data.amount > 0) &&
+        (data.category is string && data.category.size() > 0 && data.category.size() <= 50) &&
+        (data.description is string && data.description.size() > 0 && data.description.size() <= 200) &&
+        (data.date is string && data.date.size() >= 7 && data.date.size() <= 35) &&
+        (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 50)) &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 1000)) &&
+        (!('isSample' in data) || data.isSample is bool) &&
+        (!('createdAt' in data) || data.createdAt is timestamp || data.createdAt is string) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp || data.updatedAt is string);
+    }
+
+    // Validate budget documents
+    function isValidBudget(data) {
+      let requiredFields = ['category', 'amount', 'month'];
+      let allowedFields = ['category', 'amount', 'month', 'spent', 'isSample', 'createdAt', 'updatedAt'];
+
+      return data.keys().hasAll(requiredFields) &&
+        data.keys().hasOnly(allowedFields) &&
+        (data.category is string && data.category.size() > 0 && data.category.size() <= 50) &&
+        (data.amount is number && data.amount > 0) &&
+        (data.month is string && data.month.size() >= 4 && data.month.size() <= 20) &&
+        (!('spent' in data) || (data.spent is number && data.spent >= 0)) &&
+        (!('isSample' in data) || data.isSample is bool) &&
+        (!('createdAt' in data) || data.createdAt is timestamp || data.createdAt is string) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp || data.updatedAt is string);
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // User Profile Documents
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && areImmutableFieldsUnchanged(['createdAt']);
+      allow delete: if isOwner(userId);
+
+      // Transactions Subcollection
+      match /transactions/{transactionId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidTransaction(request.resource.data);
+        allow update: if isOwner(userId) && isValidTransaction(request.resource.data) && areImmutableFieldsUnchanged(['createdAt']);
+        allow delete: if isOwner(userId);
+      }
+
+      // Budgets Subcollection
+      match /budgets/{budgetId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidBudget(request.resource.data);
+        allow update: if isOwner(userId) && isValidBudget(request.resource.data) && areImmutableFieldsUnchanged(['createdAt']);
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    // Default Deny for all other collections and root documents
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
